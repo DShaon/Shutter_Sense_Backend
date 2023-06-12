@@ -3,6 +3,8 @@ const app = express();
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
 require('dotenv').config()
+
+const stripe = require('stripe')(process.env.PAYMENT_SECRET_KEY)
 const port = process.env.PORT || 5000;
 
 
@@ -44,6 +46,10 @@ async function run() {
         // Connect the client to the server	(optional starting in v4.7)
         await client.connect();
         const usersCollection = client.db('summerCamp').collection('users');
+        const ClassCollection = client.db('summerCamp').collection('classes');
+        const ClassCartCollection = client.db('summerCamp').collection('classesCart');
+        // const ClassCartCollection = client.db('summerCamp').collection('classesCart');
+
 
         // jwt related api
         app.post('/jwt', (req, res) => {
@@ -58,6 +64,16 @@ async function run() {
             const query = { email: email }
             const user = await usersCollection.findOne(query)
             if (user?.role !== 'admin') {
+                return res.status(401).send({ error: true, message: 'forbidden message' });
+            }
+            next()
+        }
+        // admin teacher middleware 
+        const verifyTeacher = async (req, res, next) => {
+            const email = req.decoded.email
+            const query = { email: email }
+            const user = await usersCollection.findOne(query)
+            if (user?.role !== 'teacher') {
                 return res.status(401).send({ error: true, message: 'forbidden message' });
             }
             next()
@@ -86,7 +102,121 @@ async function run() {
         });
 
 
+        // store all classes
+        app.post('/classes', verifyJWT, verifyTeacher, async (req, res) => {
+            const classes = req.body
+            classes.status = 'pending'
+            classes.enrollCount = 0
+            const result = await ClassCollection.insertOne(classes)
+            res.send(result)
+        })
 
+        // Get all approved classes
+        app.get('/classes/approved', async (req, res) => {
+            try {
+                const classes = await ClassCollection.find({ status: 'approved' }).toArray();
+                res.send(classes);
+            } catch (error) {
+                res.status(500).json({ error: 'Error fetching approved classes' });
+            }
+        });
+
+        // Get my classes
+        app.get('/classes/:email', verifyJWT, verifyTeacher, async (req, res) => {
+            const email = req.params.email;
+            const result = await ClassCollection.find({ instructorEmail: email }).toArray();
+            res.send(result);
+        });
+
+
+        // Get all classes
+        app.get('/classes', async (req, res) => {
+            const classes = await ClassCollection.find().toArray();
+            res.send(classes);
+        });
+
+
+
+
+
+
+        // selected class collection with duplication handeling
+        app.post("/classcart", async (req, res) => {
+            const classItem = req.body;
+
+            if (!classItem || !classItem.name || !classItem.userEmail) {
+                return res.status(400).send({ error: "Invalid request body" });
+            }
+
+            try {
+                // Check if the class item already exists for the user
+                const existingItem = await ClassCartCollection.findOne({
+                    name: classItem.name,
+                    userEmail: classItem.userEmail,
+                });
+
+                if (existingItem) {
+                    return res.status(400).send({ error: "Class item already exists" });
+                }
+
+                // Save the class item to the database
+                const result = await ClassCartCollection.insertOne(classItem);
+                res.send({ insertedId: result.insertedId });
+            } catch (error) {
+                console.error("Error adding class item:", error);
+                res.status(500).send({ error: "Error adding class item" });
+            }
+        });
+
+
+
+        // get classItem for each user
+        app.get('/classcart', async (req, res) => {
+            const userEmail = req.query.email;
+            console.log('single user data', userEmail)
+
+            if (!userEmail) {
+                res.send([]);
+            }
+
+            // const decodedEmail = req.decoded.email;
+            // if (email !== decodedEmail) {
+            //     return res.status(403).send({ error: true, message: 'forbidden access' })
+            // }
+
+            const query = { userEmail: userEmail };
+            const result = await ClassCartCollection.find(query).toArray();
+            res.send(result);
+        });
+
+        // delete classItem 
+        app.delete('/classcart/:id', async (req, res) => {
+            const id = req.params.id;
+            const query = { _id: new ObjectId(id) };
+            const result = await ClassCartCollection.deleteOne(query);
+            res.send(result);
+        })
+
+        // create payment intent //////////////////
+        app.post('/create-payment-intent', verifyJWT, async (req, res) => {
+            const { price } = req.body;
+            const amount = price * 100;
+            // console.log(amount, price);
+            const paymentIntent = await stripe.paymentIntents.create({
+                amount: amount,
+                currency: "usd",
+                payment_method_types: ['card']
+            });
+            res.send({
+                clientSecret: paymentIntent.client_secret,
+            });
+        });
+
+
+
+
+
+        // ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
         // secure admin
         app.get('/users/admin/:email', verifyJWT, async (req, res) => {
             const email = req.params.email
@@ -114,8 +244,20 @@ async function run() {
             res.send(result)
         })
 
+        // secure student
+        app.get('/users/student/:email', verifyJWT, async (req, res) => {
+            const email = req.params.email
+            console.log(email)
+            if (req.decoded.email !== email) {
+                return res.send({ teacher: false })
+            }
 
-
+            const query = { email: email }
+            const user = await usersCollection.findOne(query)
+            const result = { student: user?.role === 'student' }
+            res.send(result)
+        })
+        // /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
         // make admin api
         app.patch('/users/admin/:id', async (req, res) => {
@@ -129,6 +271,7 @@ async function run() {
             const result = await usersCollection.updateOne(filter, updateDoc);
             res.send(result)
         })
+
         // make teacher api
         app.patch('/users/teacher/:id', async (req, res) => {
             const id = req.params.id
@@ -141,6 +284,33 @@ async function run() {
             const result = await usersCollection.updateOne(filter, updateDoc);
             res.send(result)
         })
+
+        // make status approved
+        app.patch('/classes/approve/:id', async (req, res) => {
+            const id = req.params.id;
+            const filter = { _id: new ObjectId(id) };
+            const updateDoc = {
+                $set: {
+                    status: 'approved',
+                },
+            };
+            const result = await ClassCollection.updateOne(filter, updateDoc);
+            res.send(result);
+        });
+
+        // make status denied
+        app.patch('/classes/deny/:id', async (req, res) => {
+            const id = req.params.id;
+            const filter = { _id: new ObjectId(id) };
+            const updateDoc = {
+                $set: {
+                    status: 'denied',
+                },
+            };
+            const result = await ClassCollection.updateOne(filter, updateDoc);
+            res.send(result);
+        });
+
 
 
 
@@ -163,3 +333,5 @@ app.get('/', (req, res) => {
 app.listen(port, () => {
     console.log(`summer camp is  on port ${port}`);
 })
+
+
