@@ -48,7 +48,7 @@ async function run() {
         const usersCollection = client.db('summerCamp').collection('users');
         const ClassCollection = client.db('summerCamp').collection('classes');
         const ClassCartCollection = client.db('summerCamp').collection('classesCart');
-        // const ClassCartCollection = client.db('summerCamp').collection('classesCart');
+        const EnrolledClassCollection = client.db('summerCamp').collection('enrolledClass');
 
 
         // jwt related api
@@ -189,6 +189,25 @@ async function run() {
             res.send(result);
         });
 
+        // get enrolled item for each user 
+        app.get('/enrolledclass', async (req, res) => {
+            const userEmail = req.query.email;
+            console.log('single user data', userEmail)
+
+            if (!userEmail) {
+                res.send([]);
+            }
+
+            // const decodedEmail = req.decoded.email;
+            // if (email !== decodedEmail) {
+            //     return res.status(403).send({ error: true, message: 'forbidden access' })
+            // }
+
+            const query = { userEmail: userEmail };
+            const result = await EnrolledClassCollection.find(query).toArray();
+            res.send(result);
+        });
+
         // delete classItem 
         app.delete('/classcart/:id', async (req, res) => {
             const id = req.params.id;
@@ -211,6 +230,56 @@ async function run() {
                 clientSecret: paymentIntent.client_secret,
             });
         });
+
+
+
+        // Update enrollCount and availableSeats on successful payment
+        app.patch('/classesCart/:id/success', async (req, res) => {
+            const itemId = req.params.id;
+            try {
+                // Find the class item in the classesCart collection
+                const classItem = await ClassCartCollection.findOne({ _id: new ObjectId(itemId) });
+                if (!classItem) {
+                    return res.status(404).send({ error: 'Class item not found' });
+                }
+
+                // Update the enrollCount and availableSeats in the corresponding class
+                const className = classItem.name;
+                const filter = { name: className };
+                const updateDoc = {
+                    $inc: { enrollCount: 1, availableSeats: -1 },
+                };
+
+                const result = await ClassCollection.updateOne(filter, updateDoc);
+
+                if (result.matchedCount === 0) {
+                    return res.status(404).send({ error: 'Class not found' });
+                }
+
+                res.send({ message: 'Class item updated successfully' });
+            } catch (error) {
+                console.error('Error updating class item:', error);
+                res.status(500).send({ error: 'Failed to update class item' });
+            }
+        });
+
+
+       
+        //  store selected item and transaction ID
+        
+
+        app.post('/enrolledclass', async (req, res) => {
+          const { selectedItem, trxId } = req.body;
+        
+          // Add trxId to the selectedItem object
+          selectedItem.trxId = trxId;
+        
+          // Create a new document in the EnrolledClassCollection
+          const result = await EnrolledClassCollection.insertOne(selectedItem);
+        
+          res.send(result);
+        });
+        
 
 
 
