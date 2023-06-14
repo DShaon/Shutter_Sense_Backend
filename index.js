@@ -264,22 +264,22 @@ async function run() {
         });
 
 
-       
+
         //  store selected item and transaction ID
-        
+
 
         app.post('/enrolledclass', async (req, res) => {
-          const { selectedItem, trxId } = req.body;
-        
-          // Add trxId to the selectedItem object
-          selectedItem.trxId = trxId;
-        
-          // Create a new document in the EnrolledClassCollection
-          const result = await EnrolledClassCollection.insertOne(selectedItem);
-        
-          res.send(result);
+            const { selectedItem, trxId } = req.body;
+
+            // Add trxId to the selectedItem object
+            selectedItem.trxId = trxId;
+
+            // Create a new document in the EnrolledClassCollection
+            const result = await EnrolledClassCollection.insertOne(selectedItem);
+
+            res.send(result);
         });
-        
+
 
 
 
